@@ -49,6 +49,14 @@ void strcpy(char src[], char dest[]) {
     dest[i] = 0;
 }
 
+void strncpy(char src[], char dest[], int n) {
+    int i;
+    for (i = 0; i < n && src[i] != '\0'; i++)
+        dest[i] = src[i];
+    for ( ; i < n; i++)
+        dest[i] = '\0';
+}
+
 void strcat(char dest[], char src[]) {
     int dest_len = strlen(dest);
     int i = 0;

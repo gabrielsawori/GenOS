@@ -9,10 +9,13 @@ run: kernel.bin
 	qemu-system-x86_64 -kernel kernel.bin
 
 # Linker: Menyatukan semua object file termasuk idt.o dan interrupt.o
-kernel.bin: boot.o kernel.o screen.o utils.o ports.o hardware.o fs.o idt.o interrupt.o
-	$(LD) $(LDFLAGS) -o kernel.bin boot.o kernel.o screen.o utils.o ports.o hardware.o fs.o idt.o interrupt.o
+kernel.bin: boot.o kernel.o screen.o utils.o ports.o hardware.o fs.o idt.o interrupt.o user.o
+	$(LD) $(LDFLAGS) -o kernel.bin boot.o kernel.o screen.o utils.o ports.o hardware.o fs.o idt.o interrupt.o user.o
 
 # --- Kompilasi C ---
+
+user.o: user.c
+	$(CC) $(CFLAGS) user.c -o user.o
 
 kernel.o: kernel.c
 	$(CC) $(CFLAGS) kernel.c -o kernel.o

@@ -9,6 +9,7 @@ int strlen(char s[]);
 // --- UPDATE v1.0 ---
 int strcmp(char s1[], char s2[]);
 void strcpy(char src[], char dest[]);
+void strncpy(char src[], char dest[], int n);
 void strcat(char dest[], char src[]);
 // -------------------
 
