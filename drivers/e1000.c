@@ -3,7 +3,9 @@
 #include "screen.h"
 #include "mem.h" 
 #include "ports.h" 
+#include "net.h" // <--- WAJIB ADA SEKARANG UNTUK LAYER 3
 
+// Deklarasi fungsi IDT dari luar agar kita bisa "membajak" jalurnya
 extern void set_idt_gate(int n, u32 handler);
 
 #define REG_ICR     0x00C0 
@@ -26,11 +28,12 @@ struct e1000_rx_desc *rx_ring;
 struct e1000_tx_desc *tx_ring;
 
 u16 rx_cur = 0;
-u16 tx_cur = 0; // <--- Variabel penunjuk antrean pengirim
+u16 tx_cur = 0; 
 
 u32 mmio_read32(u32 addr) { return (*((volatile u32 *)(addr))); }
 void mmio_write32(u32 addr, u32 val) { (*((volatile u32 *)(addr))) = val; }
 
+// Fungsi cetak KTP Hardware (MAC)
 void print_mac_packet(u8 *mac) {
     char *chars = "0123456789ABCDEF";
     for (int i = 0; i < 6; i++) {
@@ -40,29 +43,20 @@ void print_mac_packet(u8 *mac) {
     }
 }
 
-// ============================================================
-// FASE 5: FUNGSI PENGIRIM (TRANSMIT PACKET)
-// ============================================================
+// Fungsi Penembak Paket L2 (Transmit)
 void e1000_send_packet(u8 *payload, u16 len) {
-    // 1. Salin data mentah kita ke dalam buffer TX di RAM
     u8 *tx_buf = (u8 *)tx_ring[tx_cur].addr_low;
     for(int i = 0; i < len; i++) {
         tx_buf[i] = payload[i];
     }
-
-    // 2. Isi Amplop (Descriptor)
     tx_ring[tx_cur].length = len;
-    
-    // CMD: EOP (End Of Packet - Bit 0) | IFCS (Insert FCS - Bit 1) | RS (Report Status - Bit 3) = 0x0B
     tx_ring[tx_cur].cmd = 0x0B; 
-    tx_ring[tx_cur].status = 0; // Bersihkan status, agar hardware yang merubahnya nanti jika selesai
-
-    // 3. Majukan indeks, dan beri tahu Register Hardware (TDT) untuk mengeksekusinya!
+    tx_ring[tx_cur].status = 0; 
     tx_cur = (tx_cur + 1) % E1000_NUM_TX_DESC;
     mmio_write32(e1000_mmio_base + REG_TDT, tx_cur);
 }
-// ============================================================
 
+// Fungsi Penerima & Pendelegasi Paket (Receive Handler)
 void e1000_handler() {
     u32 status = mmio_read32(e1000_mmio_base + REG_ICR);
     
@@ -71,30 +65,13 @@ void e1000_handler() {
 
     if (status & 0x80) { 
         while (rx_ring[rx_cur].status & 0x01) {
-            
             u8 *packet = (u8 *)rx_ring[rx_cur].addr_low;
             u16 len = rx_ring[rx_cur].length;
 
-            kprint_color("\n[+] PAKET DITERIMA | Tipe: ", 0x0A); 
-            
-            u16 eth_type = (packet[12] << 8) | packet[13];
-            
-            if (eth_type == 0x0800) kprint_color("IPv4", 0x0E); 
-            else if (eth_type == 0x0806) kprint_color("ARP", 0x0E);
-            else if (eth_type == 0x86DD) kprint_color("IPv6", 0x0E);
-            else if (eth_type == 0x1337) kprint_color("GENOS-TEST", 0x0D); // Tipe khusus OS kita (Warna Pink)
-            else kprint_color("Lainnya", 0x08); 
+            // MENGIRIM AMPLOP KE KANTOR POS GENOS (net.c)
+            net_handle_packet(packet, len);
 
-            kprint(" | Ukuran: ");
-            char len_str[10];
-            int_to_ascii(len, len_str);
-            kprint(len_str);
-            kprint(" bytes\n");
-
-            kprint("    -> Dari: "); print_mac_packet(&packet[6]);
-            kprint(" | Tujuan: "); print_mac_packet(&packet[0]);
-            kprint("\n> ");
-
+            // Bersihkan amplop agar bisa dipakai E1000 lagi
             rx_ring[rx_cur].status = 0;
             mmio_write32(e1000_mmio_base + REG_RDT, rx_cur);
             rx_cur = (rx_cur + 1) % E1000_NUM_RX_DESC;
@@ -102,6 +79,7 @@ void e1000_handler() {
     }
 }
 
+// Wrapper Assembly agar CPU tidak crash
 void e1000_interrupt_wrapper();
 __asm__(
     ".global e1000_interrupt_wrapper\n"
@@ -143,7 +121,7 @@ void e1000_init_rx() {
 void e1000_init_tx() {
     tx_ring = (struct e1000_tx_desc *) pmm_alloc_block();
     for (int i = 0; i < E1000_NUM_TX_DESC; i++) {
-        tx_ring[i].addr_low = (u32) kmalloc(2048); // PERBAIKAN: Kini TX juga dapat jatah RAM!
+        tx_ring[i].addr_low = (u32) kmalloc(2048); 
         tx_ring[i].addr_high = 0;
         tx_ring[i].cmd = 0;
         tx_ring[i].status = 1;
@@ -153,8 +131,6 @@ void e1000_init_tx() {
     mmio_write32(e1000_mmio_base + REG_TDLEN, E1000_NUM_TX_DESC * 16);
     mmio_write32(e1000_mmio_base + REG_TDH, 0);
     mmio_write32(e1000_mmio_base + REG_TDT, 0);
-    
-    // TCTL: Mengaktifkan Transmit Buffer
     mmio_write32(e1000_mmio_base + REG_TCTL, 0x0A);
 }
 
@@ -171,6 +147,7 @@ void e1000_init() {
     e1000_init_rx();
     e1000_init_tx();
     kprint_color("[SUKSES] Intel E1000 Terhubung ke RAM GenOS!\n", 0x02);
+    
     kprint("Menyambungkan IRQ Jaringan ke CPU...\n");
     set_idt_gate(32 + e1000_irq, (u32)e1000_interrupt_wrapper);
     
