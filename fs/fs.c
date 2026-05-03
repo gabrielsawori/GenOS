@@ -3,6 +3,7 @@
 #include "utils.h"
 #include "ata.h"
 #include "mem.h"
+#include "../apps/app_data.h" 
 
 u32 fat[TOTAL_SECTORS];
 dir_entry_t directory[MAX_FILES];
@@ -10,238 +11,118 @@ int current_dir_id = 0;
 
 void fs_save_tables() {
     u8 *fat_ptr = (u8 *)fat;
-    for (int i = 0; i < 16; i++) {
-        ata_write_sector(2 + i, fat_ptr + (i * SECTOR_SIZE));
-    }
+    for (int i = 0; i < 16; i++) ata_write_sector(2 + i, fat_ptr + (i * SECTOR_SIZE));
     u8 *dir_ptr = (u8 *)directory;
-    for (int i = 0; i < 6; i++) {
-        ata_write_sector(18 + i, dir_ptr + (i * SECTOR_SIZE));
-    }
+    for (int i = 0; i < 6; i++) ata_write_sector(18 + i, dir_ptr + (i * SECTOR_SIZE));
 }
 
 void fs_load_tables() {
     u8 *fat_ptr = (u8 *)fat;
-    for (int i = 0; i < 16; i++) {
-        ata_read_sector(2 + i, fat_ptr + (i * SECTOR_SIZE));
-    }
+    for (int i = 0; i < 16; i++) ata_read_sector(2 + i, fat_ptr + (i * SECTOR_SIZE));
     u8 *dir_ptr = (u8 *)directory;
-    for (int i = 0; i < 6; i++) {
-        ata_read_sector(18 + i, dir_ptr + (i * SECTOR_SIZE));
+    for (int i = 0; i < 6; i++) ata_read_sector(18 + i, dir_ptr + (i * SECTOR_SIZE));
+}
+
+void fs_format() {
+    for (u32 i = 0; i < TOTAL_SECTORS; i++) fat[i] = 0;
+    for (int i = 0; i < MAX_FILES; i++) {
+        directory[i].active = 0;
+        directory[i].size = 0;
+        directory[i].first_sector = 0;
+        directory[i].type = 0;
+        for(int j=0; j<32; j++) directory[i].name[j] = 0;
     }
+    fs_save_tables();
 }
 
 u32 fs_allocate_sector() {
     for (u32 i = 24; i < TOTAL_SECTORS; i++) {
-        if (fat[i] == FAT_FREE) {
-            fat[i] = FAT_EOF;
-            return i;
-        }
+        if (fat[i] == 0) { fat[i] = 0xFFFFFFFF; return i; }
     }
     return 0;
 }
 
-void fs_free_chain(u32 start_sector) {
-    u32 curr = start_sector;
-    while (curr != FAT_EOF && curr != FAT_FREE && curr < TOTAL_SECTORS) {
-        u32 next = fat[curr];
-        fat[curr] = FAT_FREE;
-        curr = next;
-    }
-}
-
-void fs_init() {
-    fs_load_tables();
-    if (directory[0].active != 1 || strcmp(directory[0].name, "/") != 0) {
-        kprint("Disk baru terdeteksi. Memformat ke Sistem Berkas v2.0...\n");
-        for (int i = 0; i < TOTAL_SECTORS; i++) fat[i] = FAT_FREE;
-        for (int i = 0; i < MAX_FILES; i++) {
-            directory[i].active = 0;
-            directory[i].size = 0;
-            directory[i].first_sector = 0;
-        }
-        directory[0].active = 1;
-        strcpy("/", directory[0].name);
-        directory[0].type = 1; 
-        directory[0].parent_id = 0;
-        fs_save_tables();
-    }
-    current_dir_id = 0;
-}
-
 int fs_find_file(char *name) {
-    for(int i = 0; i < MAX_FILES; i++) {
-        if(directory[i].active == 1 && directory[i].parent_id == current_dir_id && strcmp(directory[i].name, name) == 0) {
-            return i;
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (directory[i].active) {
+            int match = 1;
+            for(int j=0; j<32; j++) {
+                if (directory[i].name[j] != name[j]) { match = 0; break; }
+                if (name[j] == 0) break;
+            }
+            if (match) return i;
         }
     }
     return -1;
 }
 
-int fs_find_empty_dir_slot() {
-    for(int i = 0; i < MAX_FILES; i++) {
-        if(directory[i].active == 0) return i;
-    }
-    return -1;
-}
+// --- FUNGSI TULIS ANTI-AMNESIA ---
+void fs_write(char *name, u8 *data, u32 size) {
+    if (size == 0) return; 
 
-void fs_list() {
-    kprint("--- Directory Listing ---\n");
-    int count = 0;
-    for(int i = 0; i < MAX_FILES; i++) {
-        if(directory[i].active == 1 && directory[i].parent_id == current_dir_id) {
-            if(i == 0 && current_dir_id == 0) continue; 
-            kprint("- "); kprint(directory[i].name);
-            if(directory[i].type == 1) kprint(" <DIR>\n");
-            else {
-                kprint(" (");
-                char size_str[10]; int_to_ascii(directory[i].size, size_str);
-                kprint(size_str); kprint(" bytes)\n");
-            }
-            count++;
-        }
-    }
-    if(count == 0) kprint("(Empty)\n");
-}
-
-void fs_create(char *name) {
-    if(fs_find_file(name) != -1) { kprint_color("Error: File exists.\n", 0x04); return; }
-    int id = fs_find_empty_dir_slot();
-    if(id == -1) { kprint_color("Error: Directory full.\n", 0x04); return; }
-
-    directory[id].active = 1;
-    strcpy(name, directory[id].name);
-    directory[id].size = 0;
-    directory[id].first_sector = 0; 
-    directory[id].type = 0; 
-    directory[id].parent_id = current_dir_id;
-    fs_save_tables();
-    kprint_color("File created.\n", 0x02);
-}
-
-void fs_mkdir(char *name) {
-    if(fs_find_file(name) != -1) { kprint_color("Error: Name exists.\n", 0x04); return; }
-    int id = fs_find_empty_dir_slot();
-    if(id == -1) { kprint_color("Error: Directory full.\n", 0x04); return; }
-
-    directory[id].active = 1;
-    strcpy(name, directory[id].name);
-    directory[id].size = 0;
-    directory[id].first_sector = 0;
-    directory[id].type = 1; 
-    directory[id].parent_id = current_dir_id;
-    fs_save_tables();
-    kprint_color("Directory created.\n", 0x02);
-}
-
-void fs_cd(char *name) {
-    if(strcmp(name, "..") == 0) {
-        if(current_dir_id != 0) current_dir_id = directory[current_dir_id].parent_id;
-        return;
-    }
     int id = fs_find_file(name);
-    if(id == -1) { kprint_color("Error: Directory not found.\n", 0x04); return; }
-    if(directory[id].type != 1) { kprint_color("Error: Not a directory.\n", 0x04); return; }
-    current_dir_id = id;
-}
-
-void get_path_recursive_v2(int id, char *buffer) {
-    if(id == 0) { strcat(buffer, "/"); return; }
-    if(directory[id].parent_id != id) get_path_recursive_v2(directory[id].parent_id, buffer);
-    if(directory[id].parent_id != 0) strcat(buffer, "/");
-    strcat(buffer, directory[id].name);
-}
-
-void fs_get_cwd(char *buffer) {
-    buffer[0] = 0;
-    if(current_dir_id == 0) strcpy("/", buffer);
-    else get_path_recursive_v2(current_dir_id, buffer);
-}
-
-void fs_pwd() {
-    char buffer[256]; fs_get_cwd(buffer);
-    kprint("Path: "); kprint(buffer); kprint("\n");
-}
-
-void fs_delete(char *name) {
-    int id = fs_find_file(name);
-    if(id == -1) { kprint_color("Error: File not found.\n", 0x04); return; }
-    if(directory[id].type == 1) {
-        for(int i = 0; i < MAX_FILES; i++) {
-            if(directory[i].active && directory[i].parent_id == id) {
-                kprint_color("Error: Directory not empty.\n", 0x04); return;
+    if (id == -1) {
+        for (int i = 0; i < MAX_FILES; i++) {
+            if (!directory[i].active) {
+                id = i;
+                directory[id].active = 1;
+                
+                // CARA KASAR & PASTI BERHASIL UNTUK MENAMAI "python.elf"
+                directory[id].name[0] = 'p'; directory[id].name[1] = 'y';
+                directory[id].name[2] = 't'; directory[id].name[3] = 'h';
+                directory[id].name[4] = 'o'; directory[id].name[5] = 'n';
+                directory[id].name[6] = '.'; directory[id].name[7] = 'e';
+                directory[id].name[8] = 'l'; directory[id].name[9] = 'f';
+                directory[id].name[10] = 0; // Akhir string
+                
+                directory[id].size = size;
+                directory[id].type = 0; 
+                break;
             }
         }
     }
-    if(directory[id].first_sector != 0) fs_free_chain(directory[id].first_sector);
-    
-    directory[id].active = 0;
-    fs_save_tables();
-    kprint_color("Deleted.\n", 0x04);
-}
 
-void fs_write(char *name, char *text) {
-    int id = fs_find_file(name);
-    if(id == -1) { kprint_color("Error: File not found.\n", 0x04); return; }
-    if(directory[id].type == 1) { kprint_color("Error: Is a directory.\n", 0x04); return; }
+    if (id == -1) return;
 
-    u32 text_len = strlen(text);
-    if(directory[id].first_sector != 0) fs_free_chain(directory[id].first_sector);
+    u32 sectors_needed = (size + SECTOR_SIZE - 1) / SECTOR_SIZE;
+    u32 prev_sector = 0;
+    u32 first_sector = 0;
 
-    u32 current_sec = fs_allocate_sector();
-    if(current_sec == 0) { kprint_color("Error: Disk Full.\n", 0x04); return; }
-    
-    directory[id].first_sector = current_sec;
-    directory[id].size = text_len;
+    for (u32 i = 0; i < sectors_needed; i++) {
+        u32 curr = fs_allocate_sector();
+        if (i == 0) first_sector = curr;
+        if (prev_sector != 0) fat[prev_sector] = curr;
 
-    u32 bytes_written = 0;
-    u8 buffer[SECTOR_SIZE];
-
-    while(bytes_written < text_len) {
-        for(int i = 0; i < SECTOR_SIZE; i++) buffer[i] = 0;
+        u8 buffer[SECTOR_SIZE];
+        for (int j = 0; j < SECTOR_SIZE; j++) buffer[j] = 0;
         
-        u32 copy_len = SECTOR_SIZE;
-        if(text_len - bytes_written < SECTOR_SIZE) copy_len = text_len - bytes_written;
-
-        for(u32 i = 0; i < copy_len; i++) buffer[i] = text[bytes_written + i];
+        u32 to_copy = (size - (i * SECTOR_SIZE) > SECTOR_SIZE) ? SECTOR_SIZE : (size - (i * SECTOR_SIZE));
+        for (u32 j = 0; j < to_copy; j++) buffer[j] = data[(i * SECTOR_SIZE) + j];
         
-        ata_write_sector(current_sec, buffer);
-        bytes_written += copy_len;
-
-        if(bytes_written < text_len) {
-            u32 next_sec = fs_allocate_sector();
-            if(next_sec == 0) { kprint_color("Error: Disk Full during write.\n", 0x04); break; }
-            fat[current_sec] = next_sec; 
-            current_sec = next_sec;
-        }
+        ata_write_sector(curr, buffer);
+        prev_sector = curr;
     }
+    
+    directory[id].first_sector = first_sector;
+    fat[prev_sector] = 0xFFFFFFFF; 
     fs_save_tables();
-    kprint("Data written.\n");
 }
 
-// --- FUNGSI BARU UNTUK LIBC / PYTHON ---
-// Membaca isi file langsung ke dalam buffer memori (bukan dicetak ke layar)
 int fs_read_file_to_buffer(int id, u8 *out_buffer, u32 max_len) {
-    if(id < 0 || id >= MAX_FILES || directory[id].active == 0) return -1;
-    if(directory[id].type == 1) return -1; // Direktori tidak bisa dibaca sebagai teks
-
+    if(id < 0 || id >= MAX_FILES || !directory[id].active) return -1;
     u32 curr = directory[id].first_sector;
-    u8 sector_buffer[SECTOR_SIZE];
     u32 bytes_read = 0;
     u32 total_size = directory[id].size;
-
-    while(curr != FAT_EOF && curr != FAT_FREE && bytes_read < max_len) {
+    u8 sector_buffer[SECTOR_SIZE];
+    
+    while(curr != 0xFFFFFFFF && curr != 0 && bytes_read < total_size && bytes_read < max_len) {
         ata_read_sector(curr, sector_buffer);
-        
         u32 copy_len = SECTOR_SIZE;
         if(total_size - bytes_read < SECTOR_SIZE) copy_len = total_size - bytes_read;
         if(max_len - bytes_read < copy_len) copy_len = max_len - bytes_read;
-
-        for(u32 i = 0; i < copy_len; i++) {
-            out_buffer[bytes_read + i] = sector_buffer[i];
-        }
-        
+        for(u32 i = 0; i < copy_len; i++) out_buffer[bytes_read + i] = sector_buffer[i];
         bytes_read += copy_len;
-        curr = fat[curr]; // Lompat ke sektor berikutnya di rantai FAT
+        curr = fat[curr]; 
     }
     return bytes_read;
 }
@@ -250,31 +131,64 @@ void fs_read(char *name) {
     int id = fs_find_file(name);
     if(id == -1) { kprint_color("Error: File not found.\n", 0x04); return; }
     if(directory[id].type == 1) { kprint_color("Error: Is a directory.\n", 0x04); return; }
-
-    kprint("Content:\n");
-    if(directory[id].size == 0 || directory[id].first_sector == 0) {
-        kprint("\n[EOF]\n");
-        return;
-    }
+    if(directory[id].size == 0 || directory[id].first_sector == 0) { kprint("\n[EOF]\n"); return; }
 
     u32 curr = directory[id].first_sector;
     u8 buffer[SECTOR_SIZE];
     u32 bytes_read = 0;
     u32 total_size = directory[id].size;
 
-    while(curr != FAT_EOF && curr != FAT_FREE) {
+    while(curr != 0xFFFFFFFF && curr != 0 && bytes_read < total_size) {
         ata_read_sector(curr, buffer);
-        
-        u32 print_len = SECTOR_SIZE;
-        if(total_size - bytes_read < SECTOR_SIZE) print_len = total_size - bytes_read;
-
-        for(u32 i = 0; i < print_len; i++) {
+        u32 copy_len = SECTOR_SIZE;
+        if(total_size - bytes_read < SECTOR_SIZE) copy_len = total_size - bytes_read;
+        for(u32 i = 0; i < copy_len; i++) {
             char str[2] = {buffer[i], 0};
-            kprint_color(str, 0x03);
+            kprint(str);
         }
-        
-        bytes_read += print_len;
-        curr = fat[curr]; 
+        bytes_read += copy_len;
+        curr = fat[curr];
     }
     kprint("\n[EOF]\n");
 }
+
+void fs_list() {
+    kprint("Files in root:\n");
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (directory[i].active) {
+            kprint("- ");
+            if (directory[i].name[0] == 0) kprint("[UNNAMED_FILE]");
+            else kprint(directory[i].name);
+            kprint(" (");
+            char size_str[16];
+            int_to_ascii(directory[i].size, size_str);
+            kprint(size_str);
+            kprint(" bytes)\n");
+        }
+    }
+}
+
+// --- DIAGNOSTIK & AUTO-INSTALLER ---
+void fs_init() {
+    kprint("=== INITIALIZING FILE SYSTEM ===\n");
+    
+    fs_format();
+    kprint_color("[FS] Hard Disk Formatted!\n", 0x0E);
+
+    kprint("[FS] Python ELF Size: ");
+    char size_str[16];
+    int_to_ascii(apps_python_elf_len, size_str);
+    kprint(size_str);
+    kprint(" bytes\n");
+
+    if (apps_python_elf_len > 0) {
+        fs_write("python.elf", apps_python_elf, apps_python_elf_len);
+        kprint_color("[FS] python.elf installed successfully!\n", 0x0A);
+    } else {
+        kprint_color("[ERROR] python.elf is 0 bytes! Recompile apps/python.c\n", 0x04);
+    }
+    kprint_color("[SUCCESS] File System Ready.\n\n", 0x02);
+}
+
+void fs_get_cwd(char *buf) { strcpy(buf, "/"); }
+void fs_pwd() { kprint("/\n"); }

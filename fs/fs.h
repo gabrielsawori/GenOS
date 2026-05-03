@@ -28,7 +28,7 @@ void fs_mkdir(char *name);
 void fs_cd(char *name);
 void fs_pwd();
 void fs_delete(char *name);
-void fs_write(char *name, char *text);
+void fs_write(char *name, u8 *data, u32 size);
 void fs_read(char *name);
 void fs_get_cwd(char *buffer);
 int fs_find_file(char *name);
