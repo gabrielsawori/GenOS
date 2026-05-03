@@ -10,6 +10,10 @@
 #define SYS_OPEN    5
 #define SYS_CLOSE   6
 
+// Tambahan untuk MicroPython Memory Management
+#define SYS_MALLOC  90 
+#define SYS_FREE    91
+
 // Struktur untuk menangkap status register saat interupsi terjadi
 typedef struct {
     u32 ds;
